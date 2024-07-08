@@ -23,7 +23,9 @@ fun co_commit :: "system_state \<Rightarrow> system_state" where
   "co_commit (CoInit, p) = (CoWait, p)"
 | "co_commit (c, p) = (c, p)"
 
-(* CoTimeout can be simulated by co_abort*)
+fun co_timeout :: "system_state \<Rightarrow> system_state" where
+  "co_timeout (CoWait, p) = (CoAbort, p)"
+| "co_timeout (c, p) = (c, p)"
 
 fun co_act :: "nat \<Rightarrow> system_state \<Rightarrow> system_state" where
   "co_act N (CoWait, ps) = (
@@ -46,13 +48,12 @@ fun pa_abort :: "nat \<Rightarrow> nat \<Rightarrow> system_state \<Rightarrow> 
     else
       (c, ps)
   )"
- 
 
-fun pa_act :: "nat \<Rightarrow> system_state \<Rightarrow> system_state" where
-  "pa_act N (CoWait, ps) = (CoWait, \<lambda>i. if i < N \<and> ps i = PaInit then PaReady else ps i)"
-| "pa_act N (CoCommit, ps) = (CoCommit, \<lambda>i. if i < N \<and> ps i = PaReady then PaCommit else ps i)"
-| "pa_act N (CoAbort, ps) = (CoAbort, \<lambda>i. if i < N \<and> ps i = PaInit then PaAbort else ps i)"
-| "pa_act N (c, ps) = (c, ps)"
+fun pa_act :: "nat \<Rightarrow> nat \<Rightarrow> system_state \<Rightarrow> system_state" where
+  "pa_act N i (CoWait, ps) = (CoWait, if ps i = PaInit then ps (i := PaReady) else ps)"
+| "pa_act N i (CoCommit, ps) = (CoCommit, if ps i = PaReady then ps (i := PaCommit) else ps)"
+| "pa_act N i (CoAbort, ps) = (CoAbort, if ps i = PaInit then ps (i := PaAbort) else ps)"
+| "pa_act N i (c, ps) = (c, ps)"
 
 inductive valid_sys :: "system_state \<Rightarrow> nat \<Rightarrow> bool" where
   "valid_sys (init N) N"  (*1*)
@@ -66,12 +67,16 @@ inductive valid_sys :: "system_state \<Rightarrow> nat \<Rightarrow> bool" where
     s' = co_act N s\<rbrakk> \<Longrightarrow>
     valid_sys s' N"       (*4*)
 | "\<lbrakk>valid_sys s N;
-    s' = pa_act N s\<rbrakk> \<Longrightarrow>
+    i < N;
+    s' = pa_act N i s\<rbrakk> \<Longrightarrow>
     valid_sys s' N"       (*5*)
 | "\<lbrakk>valid_sys s N;
-    x < N;
-    s' = pa_abort N x s\<rbrakk> \<Longrightarrow>
+    i < N;
+    s' = pa_abort N i s\<rbrakk> \<Longrightarrow>
     valid_sys s' N"       (*6*)
+| "\<lbrakk>valid_sys s N;
+    s' = co_timeout s\<rbrakk> \<Longrightarrow>
+    valid_sys s' N"       (*7*)
 
 
 lemma co_act_ps_unchanged:
@@ -110,7 +115,11 @@ next
   case (6 s N x s')
   then show ?case
     by (metis (no_types, lifting) fun_upd_other fun_upd_same pa_abort.simps split_pairs)
-qed 
+next
+  case (7 s N s')
+  then show ?case
+    by (smt (verit) co_state.distinct(5) co_state.exhaust co_timeout.simps(1) co_timeout.simps(2) co_timeout.simps(3) co_timeout.simps(4) split_pairs)
+qed
 
 lemma co_wait_pa_init_or_abort_or_ready:
   assumes "valid_sys s N"
@@ -138,11 +147,15 @@ next
 next
   case (5 s N s')
   then show ?case
-    by (smt (verit, ccfv_SIG) fst_conv pa_act.elims pa_act.simps(1) snd_conv)
+    by (smt (verit, ccfv_SIG) co_state.exhaust fstI fun_upd_apply pa_act.simps(1) pa_act.simps(2) pa_act.simps(3) pa_act.simps(4) prod.exhaust_sel sndI)
 next
   case (6 s N x s')
   then show ?case 
     by (smt (verit, ccfv_SIG) fun_upd_other fun_upd_same pa_abort.simps split_pairs)
+next
+  case (7 s N s')
+  then show ?case
+    by (smt (verit, ccfv_threshold) co_state.exhaust co_timeout.simps(1) co_timeout.simps(2) co_timeout.simps(3) co_timeout.simps(4) fst_swap old.prod.inject prod.swap_def prod_eqI snd_swap)
 qed
 
 
@@ -177,13 +190,16 @@ next
 next
   case (5 s N s')
   then show ?case 
-    by (smt (verit, ccfv_SIG) co_state.exhaust pa_act.simps(1) pa_act.simps(2) pa_act.simps(3) 
-        pa_act.simps(4) prod.collapse split_pairs)
+    by (smt (verit, ccfv_SIG) co_state.exhaust fun_upd_other fun_upd_same pa_act.simps(1) pa_act.simps(2) pa_act.simps(3) pa_act.simps(4) prod.exhaust_sel prod.inject)
 next
   case (6 s N x s')
   then show ?case 
     by (metis pa_abort.simps pa_state.distinct(1) pa_state.distinct(3) split_pairs)
-qed 
+next
+  case (7 s N s')
+  then show ?case
+    by (metis Pair_inject co_state.simps(12) co_timeout.elims prod.exhaust_sel)
+qed
 
 corollary co_commit_pa_no_abort:
   assumes "valid_sys s N"
@@ -221,12 +237,16 @@ next
 next
   case (5 s N s')
   then show ?case 
-    by (smt (verit, del_insts) fst_conv pa_act.elims pa_act.simps(3) snd_conv)
+    by (smt (verit, ccfv_threshold) co_state.exhaust fun_upd_other fun_upd_same pa_act.simps(1) pa_act.simps(2) pa_act.simps(3) pa_act.simps(4) prod.collapse snd_swap split_pairs)
 next
   case (6 s N x s')
   then show ?case 
     by (smt (verit, ccfv_threshold) fun_upd_other fun_upd_same 
         pa_abort.simps pa_state.exhaust pa_state.simps(12) split_pairs)
+next
+  case (7 s N s')
+  then show ?case 
+    by (smt (verit) co_state.exhaust co_timeout.simps(1) co_timeout.simps(2) co_timeout.simps(3) co_timeout.simps(4) co_wait_pa_init_or_abort_or_ready fst_swap old.prod.inject prod.swap_def prod_eqI snd_swap)
 qed
   
 
@@ -266,6 +286,10 @@ next
   case (6 s N x s')
   then show ?case 
     by (metis (no_types, lifting) co_abort_pa_init_or_ready_abort co_commit_pa_commit_or_ready co_init_pa_init_or_abort co_state.exhaust co_wait_pa_init_or_abort_or_ready pa_state.distinct(1) pa_state.distinct(3) pa_state.distinct(7) pa_state.simps(12) valid_sys.intros(6))
+next
+  case (7 s N s')
+  then show ?case
+    by (smt (verit, ccfv_threshold) co_state.exhaust co_timeout.simps(1) co_timeout.simps(2) co_timeout.simps(3) co_timeout.simps(4) split_pairs)
 qed
 
 theorem safety:
@@ -297,23 +321,25 @@ next
   proof (cases "c")
     case CoInit
     then show ?thesis
-      using "5.IH" "5.hyps"(2) "5.prems"(1) "5.prems"(2) cps_def by force
+      using "5.IH" "5.hyps"(3) "5.prems"(1) "5.prems"(2) cps_def by force
   next
     case CoWait
     then show ?thesis
-      using "5.IH" "5.hyps"(2) "5.prems"(1) "5.prems"(2) cps_def by auto
+      by (metis "5.hyps"(1) "5.hyps"(2) "5.hyps"(3) "5.prems"(1) "5.prems"(2) co_wait_pa_init_or_abort_or_ready consistent_pa_states.elims(3) cps_def fst_conv pa_act.simps(1) pa_state.distinct(3) pa_state.distinct(7) pa_state.simps(12) valid_sys.intros(5))
   next
     case CoCommit
     then show ?thesis
       using "5.hyps"(1) "5.hyps"(2) "5.prems"(1) "5.prems"(2) 
         co_commit_pa_no_abort 
-        consistent_pa_states.elims(3) cps_def by fastforce
+        consistent_pa_states.elims(3) cps_def 
+      by (metis "5.hyps"(3) fst_conv pa_act.simps(2) valid_sys.intros(5))
   next
     case CoAbort
     then show ?thesis
       using "5.hyps"(1) "5.hyps"(2) "5.prems"(1) "5.prems"(2) 
         co_abort_pa_no_commit 
-        consistent_pa_states.elims(3) cps_def by fastforce
+        consistent_pa_states.elims(3) cps_def
+      by (metis "5.hyps"(3) fst_conv pa_act.simps(3) valid_sys.intros(5))
   qed
 next
   case (6 s N x s')
@@ -341,6 +367,10 @@ next
             pa_init_pa_no_commit snd_conv)
     qed
   qed
+next
+  case (7 s N s')
+  then show ?case 
+    by (smt (verit) co_state.exhaust co_timeout.simps(1) co_timeout.simps(2) co_timeout.simps(3) co_timeout.simps(4) split_pairs)
 qed
 
 
