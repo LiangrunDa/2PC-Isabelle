@@ -12,20 +12,32 @@ fun consistent_pa_states :: "pa_state \<Rightarrow> pa_state \<Rightarrow> bool"
 | "consistent_pa_states PaAbort PaCommit = False"
 | "consistent_pa_states _ _ = True"
 
+text \<open>Initialize one coordinator and N participants.\<close>
+
 definition init :: "nat \<Rightarrow> system_state" where
   "init N = (CoInit, \<lambda>i. if i < N then PaInit else undefined)"
+
+text \<open>The client might abort a transaction\<close>
 
 fun co_abort :: "system_state \<Rightarrow> system_state" where
   "co_abort (CoInit, p) = (CoAbort, p)"
 | "co_abort (c, p) = (c, p)"
 
+text \<open>The client might request a transaction commit\<close>
+
 fun co_commit :: "system_state \<Rightarrow> system_state" where
   "co_commit (CoInit, p) = (CoWait, p)"
 | "co_commit (c, p) = (c, p)"
 
+text \<open>The coordinator should abort the transaction if it doesn't receive 
+responses from all participants within a certain time limit.\<close>
+
 fun co_timeout :: "system_state \<Rightarrow> system_state" where
   "co_timeout (CoWait, p) = (CoAbort, p)"
 | "co_timeout (c, p) = (c, p)"
+
+text \<open>The coordinator should commit the transaction if all participants are ready to commit.
+Otherwise, it should abort the transaction if any participant is to abort the transaction.\<close>
 
 fun co_act :: "nat \<Rightarrow> system_state \<Rightarrow> system_state" where
   "co_act N (CoWait, ps) = (
@@ -38,6 +50,8 @@ fun co_act :: "nat \<Rightarrow> system_state \<Rightarrow> system_state" where
   )"
 | "co_act N (c, p) = (c, p)"
 
+text \<open>The participant might abort the transaction due to disk failure, constraint violation, etc.\<close>
+
 fun pa_abort :: "nat \<Rightarrow> nat \<Rightarrow> system_state \<Rightarrow> system_state" where
   "pa_abort N i (c, ps) = 
   (
@@ -49,11 +63,20 @@ fun pa_abort :: "nat \<Rightarrow> nat \<Rightarrow> system_state \<Rightarrow> 
       (c, ps)
   )"
 
+text \<open>The participant can transition from the PaInit state to the PaReady state when the 
+coordinator is waiting for responses from all participants. The participant can transition 
+from the PaReady state to the PaCommit state if the coordinator decides to commit the 
+transaction. The participant can transition from the PaInit state to the PaAbort state if the 
+coordinator decides to abort the transaction.\<close>
+
 fun pa_act :: "nat \<Rightarrow> nat \<Rightarrow> system_state \<Rightarrow> system_state" where
   "pa_act N i (CoWait, ps) = (CoWait, if ps i = PaInit then ps (i := PaReady) else ps)"
 | "pa_act N i (CoCommit, ps) = (CoCommit, if ps i = PaReady then ps (i := PaCommit) else ps)"
 | "pa_act N i (CoAbort, ps) = (CoAbort, if ps i = PaInit then ps (i := PaAbort) else ps)"
 | "pa_act N i (c, ps) = (c, ps)"
+
+text \<open> A valid system is a sequence of execution steps. At each step, we compute the next state 
+of the system using step functions defined above.\<close>
 
 inductive valid_sys :: "system_state \<Rightarrow> nat \<Rightarrow> bool" where
   "valid_sys (init N) N"  (*1*)
@@ -595,7 +618,8 @@ corollary safety_co_abort:
     and "y < N"
   shows "consistent_pa_states (ps x) (ps y)"
   by (metis assms(1) assms(2) assms(3) assms(4) co_abort_pa_init_or_ready_abort 
-      consistent_pa_states.elims(3) fst_conv pa_state.distinct(3) pa_state.distinct(7) pa_state.simps(12) snd_conv)
+      consistent_pa_states.elims(3) fst_conv pa_state.distinct(3) pa_state.distinct(7) 
+      pa_state.simps(12) snd_conv)
 
 section \<open>Two-Phase Commit: Safety\<close>
 
