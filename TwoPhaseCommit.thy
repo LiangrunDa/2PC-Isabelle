@@ -2,6 +2,26 @@ theory TwoPhaseCommit
   imports Main
 begin
 
+text \<open>Two-Phase Commit (2PC) is a fundamental protocol used in distributed systems
+to ensure that a series of operations across multiple nodes (or databases) either all succeed 
+or all fail, maintaining the consistency of the system.
+
+In this theory, we formalize the Two-Phase Commit protocol under the setting that a system 
+consists of one coordinator and N participants, where N is arbitray but fixed.  The system 
+is modeled as a state machine, where the state of the system is represented by a tuple of 
+the coordinator's state and a function that maps each participant to its state. 
+ 
+In reality, the coordinator and participants execute concurrently, possibly at different speeds
+(in particular, a node may fail by stopping execution entirely). To model this, we say that the
+system as a whole makes progress by one of the nodes performing an execution step, and nodes 
+may perform steps in any order. The progress of the system is captured by a sequence of
+execution steps, where each step is a transition from one state to another state.
+\<close>
+
+section \<open>Two-Phase Commit: Definitions\<close>
+
+text \<open>Phase 2: Commit\<close>
+
 datatype co_state = CoInit | CoWait | CoCommit | CoAbort
 datatype pa_state = PaInit | PaReady | PaCommit | PaAbort
 
@@ -11,6 +31,37 @@ fun consistent_pa_states :: "pa_state \<Rightarrow> pa_state \<Rightarrow> bool"
   "consistent_pa_states PaCommit PaAbort = False"
 | "consistent_pa_states PaAbort PaCommit = False"
 | "consistent_pa_states _ _ = True"
+
+text \<open>Phase 1: Prepare
+
+If the client decides to commit a transaction, it sends a prepare message to the coordinator.
+In our system, it is formalized as the co_commit step function. The coordinator then sends a
+prepare message to each participant participating in the transaction, and each participant replies 
+with a message indicating whether it is able to commit the transaction. It is formalized as 
+the pa_act step function. If any participant fails to commit the transaction, it will turn to the
+abort state, which is formalized as the pa_abort step function. 
+
+If all participants are ready to commit, the coordinator decides to commit the transaction. If any
+participant is to abort the transaction, the coordinator decides to abort the transaction. This is
+formalized as the co_act step function. If the coordinator doesn't receive responses from all
+participants within a certain time limit, it will abort the transaction. This is formalized as the
+co_timeout step function.
+
+If the client decides to abort the transaction, it sends an abort message to the coordinator.
+It is formalized as the co_abort step function. All the participants will abort the transaction
+after receiving the abort message from the coordinator, which is formalized as the pa_act step. 
+
+Phase 2: Commit
+
+If the coordinator decides to commit the transaction, it sends a commit message to each participant.
+Each participant must commit the transaction after receiving the commit message from the coordinator.
+If a participant fails to commit the transaction due to node crash, the coordinator must wait for the
+participant to recover and there is no timeout for the recovery.
+
+If the coordinator decides to abort the transaction, it sends an abort message to each participant.
+Each participant must abort the transaction after receiving the abort message from the coordinator.
+
+\<close>
 
 text \<open>Initialize one coordinator and N participants.\<close>
 
@@ -100,6 +151,24 @@ inductive valid_sys :: "system_state \<Rightarrow> nat \<Rightarrow> bool" where
 | "\<lbrakk>valid_sys s N;
     s' = co_timeout s\<rbrakk> \<Longrightarrow>
     valid_sys s' N"       (*7*)
+
+text \<open> The number of commit + abort nodes will monotonically increase. \<close>
+
+fun aborts_commits :: "system_state \<Rightarrow> nat set" where
+  "aborts_commits (c, ps) = {x. (ps x = PaAbort \<or> ps x = PaCommit)}"
+
+fun progress :: "system_state \<Rightarrow> nat" where
+  "progress (c, ps) = card (aborts_commits (c, ps))"
+
+text \<open>Correctness of the Two-Phase Commit protocol is defined as: either all participants commit the
+transaction or all participants abort the transaction. 
+
+Safety property: If one commits, no one aborts. If one aborts, no one commits.
+This is formalized as the safety theorem. 
+
+Liveness property: Eventually all participants will reach to the commit state or abort state.
+This is formalized as the liveness theorem. The number of commit + abort nodes is monotonically
+increasing.\<close>
 
 section \<open>invariant of step functions\<close>
 
@@ -310,10 +379,94 @@ lemma co_timeout_CoAbort:
   using assms apply (cases "((c, p))" rule: co_timeout.cases)
   by auto
 
+section \<open>lemmas of progress\<close>
+
+lemma aborts_commits_abort[simp]:
+  "aborts_commits (c', ps(i := PaAbort)) = aborts_commits (c, ps) \<union> {i}"
+  by auto
+
+lemma aborts_commits_commit[simp]:
+  "aborts_commits (c', ps(i := PaCommit)) = aborts_commits (c, ps) \<union> {i}"
+  by auto
+
+lemma aborts_commits_progress1[simp]:
+  assumes "aborts_commits s \<union> {i} = aborts_commits s'"
+  shows "progress s \<le> progress s'"
+  using assms 
+  by (metis Un_insert_right card_insert_le progress.elims sup_bot_right)
+
+lemma aborts_commits_progress2[simp]:
+  assumes "aborts_commits s = aborts_commits s'"
+  shows "progress s \<le> progress s'"
+  using assms
+  by (metis order_refl progress.elims)
+
+lemma co_abort_unchanged:
+  assumes "co_abort s = s'"
+  shows "aborts_commits s = aborts_commits s'"
+  by (metis aborts_commits.elims assms co_abort_p_unchanged)
+
+lemma co_commit_unchanged:
+  assumes "co_commit s = s'"
+  shows "aborts_commits s = aborts_commits s'"
+  by (metis aborts_commits.elims assms co_commit_p_unchanged)
+
+lemma co_timeout_unchanged:
+  assumes "co_timeout s = s'"
+  shows "aborts_commits s = aborts_commits s'"
+  by (metis aborts_commits.elims assms co_timeout_p_unchanged)
+
+lemma co_act_unchanged:
+  assumes "co_act N s = s'"
+  shows "aborts_commits s = aborts_commits s'"
+  by (metis aborts_commits.elims assms co_act_p_unchanged)
+
+lemma pa_act_progress:
+  assumes "pa_act N i s = s'"
+  shows "aborts_commits s \<union> {i} = aborts_commits s'
+      \<or> aborts_commits s = aborts_commits s'"
+proof (cases "(N, i, s)" rule: pa_act.cases)
+  case (1 N i ps)
+  then show ?thesis proof (cases "ps i = PaInit")
+    case True
+    have "i \<notin> aborts_commits s"
+      using "1" True by auto
+    have "i \<notin> aborts_commits s'"
+      using "1" True assms by force
+    have "\<forall>x \<in> aborts_commits s. x \<in> aborts_commits s'"
+      using "1" assms by force
+    then show ?thesis
+      by (smt (z3) "1" Collect_cong Pair_inject aborts_commits.simps assms fun_upd_other 
+          fun_upd_same mem_Collect_eq pa_act.simps(1) pa_state.distinct(7) pa_state.distinct(9))
+  next
+    case False
+    then show ?thesis
+      using "1" assms by auto
+  qed
+next
+  case (2 N i ps)
+  then show ?thesis 
+    using assms by force
+next
+  case (3 N i ps)
+  then show ?thesis 
+    using assms by force
+next
+  case (4 N i ps)
+  then show ?thesis 
+    using assms by force
+qed
+
+lemma pa_abort_progress:
+  assumes "pa_abort N i s = s'"
+  shows "aborts_commits s \<union> {i} = aborts_commits s'
+      \<or> aborts_commits s = aborts_commits s'"
+    by (metis aborts_commits_abort assms pa_abort.simps prod.collapse)
 
 section "Two-Phase Commit: Phase 1"
 
-text \<open>Before coordinator prepares to commit, all participants must be in PaInit or PaAbort\<close>
+text \<open>Before coordinator prepares to commit, all participants must be in PaInit or PaAbort 
+(participants might abort because of transaction failure)\<close>
 
 lemma co_init_pa_init_or_abort:
   assumes "valid_sys s N"
@@ -621,9 +774,9 @@ corollary safety_co_abort:
       consistent_pa_states.elims(3) fst_conv pa_state.distinct(3) pa_state.distinct(7) 
       pa_state.simps(12) snd_conv)
 
-section \<open>Two-Phase Commit: Safety\<close>
+section \<open>Two-Phase Commit: Correctness\<close>
 
-text \<open>Correctness of the two-phase commit protocol\<close>
+subsection \<open>Safety\<close>
 
 theorem safety:
   assumes "valid_sys (c, ps) N"
@@ -632,5 +785,44 @@ theorem safety:
   shows "consistent_pa_states (ps x) (ps y)"
   using assms safety_co_init safety_co_wait safety_co_commit safety_co_abort 
   by (cases "c") auto
+
+subsection \<open>Liveness\<close>
+
+lemma liveness_co_abort:
+  assumes "valid_sys s N"
+    and "co_abort s = s'"
+  shows "progress s' \<ge> progress s"
+  using aborts_commits_progress2 assms(2) co_abort_unchanged by blast
+
+lemma liveness_co_commit:
+  assumes "valid_sys s N"
+    and "co_commit s = s'"
+  shows "progress s' \<ge> progress s"
+  using aborts_commits_progress2 assms(2) co_commit_unchanged by blast
+
+lemma liveness_co_timeout:
+  assumes "valid_sys s N"
+    and "co_timeout s = s'"
+  shows "progress s' \<ge> progress s"
+  using aborts_commits_progress2 assms(2) co_timeout_unchanged by blast
+
+lemma liveness_co_act:
+  assumes "valid_sys s N"
+    and "co_act N s = s'"
+  shows "progress s' \<ge> progress s"
+  using aborts_commits_progress2 assms(2) co_act_unchanged by blast
+
+lemma liveness_pa_abort:
+  assumes "valid_sys s N"
+    and "pa_abort N i s = s'"
+  shows "progress s' \<ge> progress s"
+  by (metis aborts_commits_progress1 aborts_commits_progress2 assms(2) pa_abort_progress)
+
+lemma liveness_pa_act:
+  assumes "valid_sys s N"
+    and "pa_act N i s = s'"
+  shows "progress s' \<ge> progress s"
+  by (metis aborts_commits_progress1 aborts_commits_progress2 assms(2) pa_act_progress)
+  
 
 end
